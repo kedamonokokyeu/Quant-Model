@@ -19,11 +19,11 @@ def OHLCV_data_analyzer(): # here we find what's important from OHLCV data
         group_by="column"  # prevents multi-level columns
     )
 
-    # --- Fix for MultiIndex or multi-column issue ---
+    # fix for MultiIndex or multi-column issue 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # Sometimes yfinance still leaves sub-DataFrames — force select first column
+    # sometimes yfinance still leaves sub-DataFrames, so we force select first column
     if isinstance(df["Close"], pd.DataFrame):
         df["Close"] = df["Close"].iloc[:, 0]
         df["High"]  = df["High"].iloc[:, 0]
@@ -76,64 +76,82 @@ def OHLCV_data_analyzer(): # here we find what's important from OHLCV data
     df["Target_3m"] = df["Close"].shift(-63) / df["Close"] - 1
     df["Target_3m"] = (df["Target_3m"] > 0.05).astype(int)  # classification
 
-    df = df.dropna() # b/c we used rolling for some of these df so we just get NaN before the window is filled
+    df = df.ffill()   # forward fill missing fundamentals
+    df = df.dropna(subset=["Target_3m"])   # only drop rows where target is missing
+    # b/c we used rolling for some of these df so we just get NaN before the window is filled
     
     return df
 
-def valuation_ratios():
+def valuation_ratios(base_index=None):
+    # get Yahoo fundamentals
     financial_q = ticker.quarterly_financials.T.copy()
     balance_sheet = ticker.quarterly_balance_sheet.T.copy()
 
-    COLUMN_ALIASES = { # remember to add into debug documentation---yfinance can change column labels depending on the ticker
+    # guarding against empty returns
+    if financial_q.empty and balance_sheet.empty:
+        print("No fundamentals found. Returning empty fundamentals.")
+        return pd.DataFrame(index=base_index)
+
+    # to make sure datetime index works
+    def fix_index(df):
+        if df.empty:
+            return df
+        if isinstance(df.index, pd.PeriodIndex):
+            df.index = df.index.to_timestamp()
+        else:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+        df = df[~df.index.isna()]  # drop NaT rows
+        return df.sort_index()
+
+    financial_q = fix_index(financial_q)
+    balance_sheet = fix_index(balance_sheet)
+
+    # --- column aliases for different yahoo column names ---
+    COLUMN_ALIASES = {
         "Total Liab": ["Total Liab", "Total Liabilities Net Minority Interest"],
-        "Total Stockholder Equity": ["Total Stockholder Equity", "Ordinary Shares", "Total Equity Gross Minority Interest"],
+        "Total Stockholder Equity": ["Total Stockholder Equity", "Ordinary Shares",
+                                     "Total Equity Gross Minority Interest"],
         "Total Current Assets": ["Total Current Assets"],
         "Total Current Liabilities": ["Total Current Liabilities"]
     }
 
-    # written so whichever column alias shows up first is used
     def get_first_available(df, candidates):
         for c in candidates:
             if c in df.columns:
                 return df[c]
-        return None
+        return pd.Series(index=df.index, dtype=float)
 
+    # profit margin and growth
     if "Net Income" in financial_q.columns and "Total Revenue" in financial_q.columns:
         financial_q["ProfitMargin"] = financial_q["Net Income"] / financial_q["Total Revenue"]
-        financial_q["Revenue_YoY"] = financial_q["Total Revenue"].pct_change(4)
-        financial_q["ProfitMargin_YoY"] = financial_q["ProfitMargin"].pct_change(4)
-    else:
-        financial_q["ProfitMargin"] = None
-        financial_q["Revenue_YoY"] = None
-        financial_q["ProfitMargin_YoY"] = None
+        financial_q["Revenue_YoY"] = financial_q["Total Revenue"].pct_change(4, fill_method=None)
+        financial_q["ProfitMargin_YoY"] = financial_q["ProfitMargin"].pct_change(4, fill_method=None)
 
+    # debt/equity
     total_liab = get_first_available(balance_sheet, COLUMN_ALIASES["Total Liab"])
     equity = get_first_available(balance_sheet, COLUMN_ALIASES["Total Stockholder Equity"])
-    if total_liab is not None and equity is not None:
-        balance_sheet["DebtEquity"] = total_liab / equity
-        balance_sheet["DebtEquity_QoQ"] = balance_sheet["DebtEquity"].pct_change()
-        balance_sheet["DebtEquity_YoY"] = balance_sheet["DebtEquity"].pct_change(4)
-    else:
-        balance_sheet["DebtEquity"] = None
-        balance_sheet["DebtEquity_QoQ"] = None
-        balance_sheet["DebtEquity_YoY"] = None
+    balance_sheet["DebtEquity"] = total_liab / equity
+    balance_sheet["DebtEquity_QoQ"] = balance_sheet["DebtEquity"].pct_change(fill_method=None)
+    balance_sheet["DebtEquity_YoY"] = balance_sheet["DebtEquity"].pct_change(4, fill_method=None)
 
+    # current ratio
     current_assets = get_first_available(balance_sheet, COLUMN_ALIASES["Total Current Assets"])
     current_liabilities = get_first_available(balance_sheet, COLUMN_ALIASES["Total Current Liabilities"])
-    if current_assets is not None and current_liabilities is not None:
-        balance_sheet["CurrentRatio"] = current_assets / current_liabilities
-        balance_sheet["CurrentRatio_QoQ"] = balance_sheet["CurrentRatio"].pct_change()
-    else:
-        balance_sheet["CurrentRatio"] = None
-        balance_sheet["CurrentRatio_QoQ"] = None
+    balance_sheet["CurrentRatio"] = current_assets / current_liabilities
+    balance_sheet["CurrentRatio_QoQ"] = balance_sheet["CurrentRatio"].pct_change(fill_method=None)
 
-    # --- Combine ---
+    # combine all fundamentals into pd df
     fundamentals = pd.concat([
-        financial_q[["Revenue_YoY", "ProfitMargin", "ProfitMargin_YoY"]],
+        financial_q[["Revenue_YoY", "ProfitMargin", "ProfitMargin_YoY"]] if not financial_q.empty else pd.DataFrame(),
         balance_sheet[["DebtEquity", "DebtEquity_QoQ", "DebtEquity_YoY",
-                       "CurrentRatio", "CurrentRatio_QoQ"]]
+                       "CurrentRatio", "CurrentRatio_QoQ"]] if not balance_sheet.empty else pd.DataFrame()
     ], axis=1)
 
+    if fundamentals.empty:
+        print("Fundamentals columns ended up empty.")
+        return pd.DataFrame(index=base_index)
+
+    # --- Reindex to daily and forward fill ---
     fundamentals = fundamentals.resample("D").ffill()
 
     return fundamentals
@@ -217,6 +235,13 @@ def combine_features_dataset(comparisons = None): # just in case the user doesn'
 
     df = OHLCV_data_analyzer()
     fundamentals = valuation_ratios()
+
+    print("Fundamentals preview:")
+    print(fundamentals.head(10))
+    print("Fundamentals shape:", fundamentals.shape)
+    print("Fundamentals index range:", fundamentals.index.min(), "to", fundamentals.index.max())
+    print("NaNs per column:\n", fundamentals.isna().sum())
+
     df = df.merge(fundamentals, how = "left", left_index = True, right_index = True) # left_index and right_index true because the indexes represent dates from the ticker, and we do how = "left" b/c fundamentals data is only for quarters, we fill in later for the daily data
     
     df["RSI"] = rsi_calculation(df)
@@ -240,8 +265,9 @@ def combine_features_dataset(comparisons = None): # just in case the user doesn'
         relative_strength_df = relative_strength_comparison(df, comparisons) # remember relative_strength_comparison returns a dataframe of these comparisons
         df = df.join(relative_strength_df) # add to our big dataframe
 
-    df = df.ffill().dropna() # so quarterly values will be applied to every day in that quarter until updated instead of being NaN values
-    
+    df = df.ffill()
+    df = df.dropna(subset=["Target_3m"])  # only drop if label is missing
+    # so quarterly values will be applied to every day in that quarter until updated instead of being NaN values
     return df
 
 # ---------------------- BUILDING THE MODEL AND TUNING ---------------------- #
@@ -250,6 +276,14 @@ df = combine_features_dataset()
 
 X = df.drop(columns = ["Target_3m"]) # given all the data from the dataset, we want to predict Target_3m, 3 months into the future, but we drop it so the model cannot see the future
 y = df["Target_3m"] # what we want to predict
+
+print("Dataset rows:", len(df))
+print("Index range:", df.index.min(), "to", df.index.max())
+print("Rows before 2021:", len(df.loc[:'2021-01-01']))
+print("Rows after 2021:", len(df.loc['2021-01-01':]))
+print("Merged dataset after fundamentals:")
+print(df.tail(20))  # last few rows
+print("Dataset shape:", df.shape)
 
 # can't shuffle the data around for training and testing since finance is time-series
 split_date = "2021-01-01"
@@ -264,6 +298,11 @@ print("Accuracy:", accuracy_score(y_test, y_pred))
 print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
 print("Report:\n", classification_report(y_test, y_pred))
 
+# --------------------- DEBUG -------------------- #
 
+print("After combine_features_dataset():")
+print("Rows:", len(df))
+print("Columns:", df.columns)
+print("NaNs per column:\n", df.isna().sum())
 
    # user_input = input("Enter the ETFs and Index Fund Tickers that you'd like to compare to, and separate them by a space.") #SAVE FOR LATER
