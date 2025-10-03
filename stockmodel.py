@@ -84,20 +84,20 @@ def valuation_ratios():
     financial_q = ticker.quarterly_financials.T.copy()
     balance_sheet = ticker.quarterly_balance_sheet.T.copy()
 
-    COLUMN_ALIASES = {
+    COLUMN_ALIASES = { # remember to add into debug documentation---yfinance can change column labels depending on the ticker
         "Total Liab": ["Total Liab", "Total Liabilities Net Minority Interest"],
         "Total Stockholder Equity": ["Total Stockholder Equity", "Ordinary Shares", "Total Equity Gross Minority Interest"],
         "Total Current Assets": ["Total Current Assets"],
         "Total Current Liabilities": ["Total Current Liabilities"]
     }
 
+    # written so whichever column alias shows up first is used
     def get_first_available(df, candidates):
         for c in candidates:
             if c in df.columns:
                 return df[c]
         return None
 
-    # --- Profit Margin ---
     if "Net Income" in financial_q.columns and "Total Revenue" in financial_q.columns:
         financial_q["ProfitMargin"] = financial_q["Net Income"] / financial_q["Total Revenue"]
         financial_q["Revenue_YoY"] = financial_q["Total Revenue"].pct_change(4)
@@ -107,7 +107,6 @@ def valuation_ratios():
         financial_q["Revenue_YoY"] = None
         financial_q["ProfitMargin_YoY"] = None
 
-    # --- Debt/Equity ---
     total_liab = get_first_available(balance_sheet, COLUMN_ALIASES["Total Liab"])
     equity = get_first_available(balance_sheet, COLUMN_ALIASES["Total Stockholder Equity"])
     if total_liab is not None and equity is not None:
@@ -119,7 +118,6 @@ def valuation_ratios():
         balance_sheet["DebtEquity_QoQ"] = None
         balance_sheet["DebtEquity_YoY"] = None
 
-    # --- Current Ratio ---
     current_assets = get_first_available(balance_sheet, COLUMN_ALIASES["Total Current Assets"])
     current_liabilities = get_first_available(balance_sheet, COLUMN_ALIASES["Total Current Liabilities"])
     if current_assets is not None and current_liabilities is not None:
