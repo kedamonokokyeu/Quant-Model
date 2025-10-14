@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, make_scorer, roc_auc_score, f1_score
 import joblib
@@ -13,6 +12,10 @@ print("Enter the company ticker(s) you want to predict. (e.g. AAPL MSFT NVDA)")
 ticker_symbol = input()
 tickers = ticker_symbol.upper().split()
 results = {}
+
+print("Enter ETF or Index Fund tickers for comparison (e.g. SPY QQQ ^GSPC IWM), or press Enter for none:")
+etf_input = input().strip().upper()
+comparisons = etf_input.split() if etf_input else None
 
 for ticker_symbol in tickers:
     print(f"\n========== Analyzing {ticker_symbol} ==========")
@@ -231,12 +234,20 @@ for ticker_symbol in tickers:
         stock_return = df["Close"].pct_change()
 
         for ticker in comparisons:
-            etf_ticker = yf.download(ticker, start = start, end = end)
-            etf = etf_ticker["Close"]
-            etf = etf.reindex(df.index).fillna(method = "ffill") # if there are empty values in the etf_ticker, fill it with last known value and match it with stock data timeline
-            etf_return = etf.pct_change()
-            relative_strength[f"RS_{ticker}"] = stock_return - etf_return # f-string so that the dataframe's columns 
+            etf_ticker = yf.download(ticker, start=start, end=end, progress=False)
 
+            # --- ensure 'Close' is a single Series, even if multiple tickers or levels 
+            if isinstance(etf_ticker.columns, pd.MultiIndex):
+                etf_ticker.columns = etf_ticker.columns.get_level_values(0)
+            if isinstance(etf_ticker["Close"], pd.DataFrame):
+                etf = etf_ticker["Close"].iloc[:, 0]  # take first column if multi
+            else:
+                etf = etf_ticker["Close"]
+
+            etf = etf.reindex(df.index).ffill()  # align with stock timeline
+            etf_return = etf.pct_change(fill_method=None)  # avoid future deprecation warning
+
+            relative_strength[f"RS_{ticker}"] = stock_return - etf_return
         return relative_strength
     
     def combine_features_dataset(comparisons = None): # just in case the user doesn't input ETFs or index funsd to compare the stock to
@@ -245,10 +256,9 @@ for ticker_symbol in tickers:
         fundamentals = valuation_ratios()
 
         print("Fundamentals preview:")
-        print(fundamentals.head(10))
-        print("Fundamentals shape:", fundamentals.shape)
-        print("Fundamentals index range:", fundamentals.index.min(), "to", fundamentals.index.max())
-        print("NaNs per column:\n", fundamentals.isna().sum())
+        print(fundamentals.head(3))
+        print("NaNs per column (summary):", fundamentals.isna().sum().sum())
+
 
         df = df.merge(fundamentals, how = "left", left_index = True, right_index = True) # left_index and right_index true because the indexes represent dates from the ticker, and we do how = "left" b/c fundamentals data is only for quarters, we fill in later for the daily data
         
@@ -280,7 +290,7 @@ for ticker_symbol in tickers:
 
     # ---------------------- BUILDING THE MODEL AND TUNING ---------------------- #
 
-    df = combine_features_dataset()
+    df = combine_features_dataset(comparisons)
 
     X = df.drop(columns = ["Target_3m"]) # given all the data from the dataset, we want to predict Target_3m, 3 months into the future, but we drop it so the model cannot see the future
     y = df["Target_3m"] # what we want to predict
@@ -302,6 +312,8 @@ for ticker_symbol in tickers:
     positives = y_train.sum()  # looks at all "1" values in y_train, and we'll apply weighting on this later
     negatives = len(y_train) - positives # these are our "0" values through binary classification, this is to see how many there are
     positive_scaling = negatives / max(positives, 1) # we divide by max of positives or 1 to avoid division by 0 -- this is just how XGBoost does weighting
+
+# ----------- XGBoost FOR EACH TICKER (we'll look at this performance and the aggregate performance to see what we need to change) --------- #
 
     xgb = XGBClassifier( # REFER TO DOC
         objective = "binary:logistic", # written to indicate binary classification with a logistic loss
@@ -345,7 +357,7 @@ for ticker_symbol in tickers:
     search.fit(X_train, y_train, sample_weight = weights_train)
     
     # mark the best parameters for each ticker
-    best_xgb = search.best_estimator_
+    best_xgb = search.best_estimator_ # a new XGB model, but instead of dictionaries for its parameters, it just has the best ones  
     print("")
     print("Best Parameters:", search.best_params_)  
     print("Best Cross-val F1:", search.best_score_)
@@ -363,28 +375,9 @@ for ticker_symbol in tickers:
 
     results[ticker_symbol] = accuracy_score(y_test, y_pred)
 
-# --------------------- DEBUG SECTION -------------------- #
-
-# making sure all 3 have same length so no error happen
-print("X_train shape:", X_train.shape)
-print("y_train shape:", y_train.shape)
-print("weights_train shape:", weights_train.shape)
-
-debug_df = pd.DataFrame({
-    "date": dates,
-    "age_days": age_days,
-    "weight": weights
-})
-
-print(debug_df.head())
-print(debug_df.tail())
-
 print("\n===== Final Results Across Tickers =====")
 for t, acc in results.items():
     print(f"{t}: Accuracy = {acc:.3f}")
-
-   # user_input = input("Enter the ETFs and Index Fund Tickers that you'd like to compare to, and separate them by a space.") #SAVE FOR LATER
-
 
 # --------------------- AGGREGATE PLOTS -------------------- #
 # collect all confusion matrices and correlations across tickers
@@ -404,25 +397,37 @@ for ticker_symbol in tickers:
     X_train, X_test = X.loc[:split_date].iloc[:-1], X.loc[split_date:]
     y_train, y_test = y.loc[:split_date].iloc[:-1], y.loc[split_date:]
 
+    positives = y_train.sum()
+    negatives = len(y_train) - max(positives, 1)
+    positive_scaling = negatives / max(positives, 1)
 
-
-''' REPLACING WITH GRID-SEARCH
-    clf = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=12,
-        random_state=42,
-        class_weight="balanced_subsample"
+    # ---------- AGGREGATE XGBoost FOR ALL TICKERS ---------- #
+    xgb = XGBClassifier(
+        objective = "binary:logistic", 
+        eval_metric = "logloss", 
+        tree_method = "hist", 
+        random_state = 42,
+        n_jobs = -1,
+        scale_pos_weight = positive_scaling,
+        n_estimators = best_xgb.get_params().get("n_estimators", 500), # get_params is built in function that just gets the parameters from the best_xgb model
+        learning_rate = best_xgb.get_params().get("learning_rate", 0.05), # the second value in the parameters is just default if none is found, just chose them without much basis
+        max_depth = best_xgb.get_params().get("max_depth", 5),
+        min_child_weight = best_xgb.get_params().get("min_child_weight", 3),
+        subsample = best_xgb.get_params().get("subsample", 0.8),
+        colsample_bytree = best_xgb.get_params().get("colsample_bytree", 0.8),
+        gamma = best_xgb.get_params().get("gamma", 0.5),
+        reg_alpha = best_xgb.get_params().get("reg_alpha", 0.1),
+        reg_lambda = best_xgb.get_params().get("reg_lambda", 1.0)
     )
-    clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
 
-    # accumulate confusion matrices
+    xgb.fit(X_train, y_train)
+    y_pred = xgb.predict(X_test)
+
+    # accumulate confusion matrices for aggregate view
     all_cm += confusion_matrix(y_test, y_pred)
 
-    # store correlations for this ticker
     corrs = df.corr()["Target_3m"].drop("Target_3m")
     all_corrs.append(corrs)
-'''
 
 # ---- final confusion matrix ----
 plt.figure(figsize=(5,4))
