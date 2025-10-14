@@ -1,12 +1,13 @@
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, RandomizedSearchCV
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, make_scorer, roc_auc_score, f1_score
 import joblib
 import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
+from xgboost import XGBClassifier
 
 print("Enter the company ticker(s) you want to predict. (e.g. AAPL MSFT NVDA)")
 ticker_symbol = input()
@@ -90,7 +91,7 @@ for ticker_symbol in tickers:
         return df
 
     def valuation_ratios(base_index=None):
-        # get Yahoo fundamentals
+        # get yahoo fundamentals
         financial_q = ticker.quarterly_financials.T.copy()
         balance_sheet = ticker.quarterly_balance_sheet.T.copy()
 
@@ -298,19 +299,67 @@ for ticker_symbol in tickers:
     weights = pd.Series(decay ** (age_days / 30), index = X.index) # 1% drop for every month in the dataset behind the current date, a pandas series with dates indexes
     weights_train = weights.loc[X_train.index] # also added .iloc[:-1] to drop the last row so that the split date data isn't in both training and testing
 
-    clf = RandomForestClassifier(
-        n_estimators = 300, # 300 trees in the forest
-        max_depth = 12, # limits how deep trees, go, but since market is very noisy, we don't want it to be too deep or we overfit on noise
-        random_state = 42, # reproducibility
-        class_weight = "balanced_subsample" # gives more important weighting to the minority classes in that tree's bootstrap sample 
+    positives = y_train.sum()  # looks at all "1" values in y_train, and we'll apply weighting on this later
+    negatives = len(y_train) - positives # these are our "0" values through binary classification, this is to see how many there are
+    positive_scaling = negatives / max(positives, 1) # we divide by max of positives or 1 to avoid division by 0 -- this is just how XGBoost does weighting
+
+    xgb = XGBClassifier( # REFER TO DOC
+        objective = "binary:logistic", # written to indicate binary classification with a logistic loss
+        eval_metric = "logloss", # a penalty based off of confidence and how wrong the model was
+        tree_method = "hist", # creates histogram with bins, tests which values until tree splits off into child
+        random_state = 42,
+        n_jobs = -1,
+        scale_pos_weight = positive_scaling
     )
 
-    clf.fit(X_train, y_train, sample_weight = weights_train) # give the model these parameters to learn off X_train and learn to predict y_train, the labels we want to predict
-    y_pred = clf.predict(X_test) # features from the test period from 2021 to 2025 and predict labels of 0 to 1 for y_pred, and we'll compare to y_test which is the answer key
+    param_distributions = { # what we'll grid search for optimization
+        "n_estimators": [300, 500, 700, 900],
+        "learning_rate": [0.01, 0.03, 0.05, 1],
+        "max_depth": [3, 4, 5, 6, 8],
+        "min_child_weight": [1, 3, 5, 7],
+        "subsample": [0.6, 0.8, 1.0],
+        "colsample_bytree": [0.6, 0.8, 1.0],
+        "gamma": [0, 0.5, 1],
+        "reg_alpha": [0, 0.1, 0.5],
+        "reg_lambda": [0.5, 1, 2]
+    }
 
-    print("Accuracy:", accuracy_score(y_test, y_pred))
+    # time series cross validation (or tcsv)
+    tscv = TimeSeriesSplit(n_splits = 5)
+    scorer = make_scorer(f1_score)
+
+    search = RandomizedSearchCV( # check documentation
+        estimator = xgb,
+        param_distributions = param_distributions,
+        n_iter = 40, 
+        scoring = scorer,
+        cv = tscv,
+        verbose = 1,
+        n_jobs = -1,
+        refit = True,
+        random_state = 42
+    )
+
+    print("")
+    print("Currently tuning XGBoost Hyperparameters . . .")
+    search.fit(X_train, y_train, sample_weight = weights_train)
+    
+    # mark the best parameters for each ticker
+    best_xgb = search.best_estimator_
+    print("")
+    print("Best Parameters:", search.best_params_)  
+    print("Best Cross-val F1:", search.best_score_)
+
+    y_proba = best_xgb.predict_proba(X_test)[:, 1] # get the probaiblity of growth values
+    y_pred = (y_proba >= 0.5).astype(int) # convert to true or false array, then back to 0 and 1s
+
+    print("F1:", f1_score(y_test, y_pred))
+    print("ROC AUC:", roc_auc_score(y_test, y_proba))  # see how accurate we are in ranking positives
     print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
-    print("Report:\n", classification_report(y_test, y_pred))
+    print("Report:\n", classification_report(y_test, y_pred, digits=3))
+
+    # save model for this ticker
+    joblib.dump(best_xgb, f"{ticker_symbol}_xgb_model.pkl")
 
     results[ticker_symbol] = accuracy_score(y_test, y_pred)
 
@@ -355,6 +404,9 @@ for ticker_symbol in tickers:
     X_train, X_test = X.loc[:split_date].iloc[:-1], X.loc[split_date:]
     y_train, y_test = y.loc[:split_date].iloc[:-1], y.loc[split_date:]
 
+
+
+''' REPLACING WITH GRID-SEARCH
     clf = RandomForestClassifier(
         n_estimators=300,
         max_depth=12,
@@ -370,6 +422,7 @@ for ticker_symbol in tickers:
     # store correlations for this ticker
     corrs = df.corr()["Target_3m"].drop("Target_3m")
     all_corrs.append(corrs)
+'''
 
 # ---- final confusion matrix ----
 plt.figure(figsize=(5,4))
@@ -389,3 +442,4 @@ plt.title("Average Feature Correlation with Stock Growth (All Tickers)")
 plt.xlabel("Correlation")
 plt.ylabel("Feature")
 plt.show()
+
