@@ -7,6 +7,9 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 from xgboost import XGBClassifier
+import requests
+
+ALPHA_VANTAGE_API_KEY = "D6R9ALL4M1NV5A0B"
 
 print("Enter the company ticker(s) you want to predict. (e.g. AAPL MSFT NVDA)")
 ticker_symbol = input()
@@ -93,79 +96,48 @@ for ticker_symbol in tickers:
         
         return df
 
-    def valuation_ratios(base_index=None):
-        # get yahoo fundamentals
-        financial_q = ticker.quarterly_financials.T.copy()
-        balance_sheet = ticker.quarterly_balance_sheet.T.copy()
-
-        # guarding against empty returns
-        if financial_q.empty and balance_sheet.empty:
-            print("No fundamentals found. Returning empty fundamentals.")
-            return pd.DataFrame(index=base_index)
-
-        # to make sure datetime index works
-        def fix_index(df):
-            if df.empty:
-                return df
-            if isinstance(df.index, pd.PeriodIndex):
-                df.index = df.index.to_timestamp()
-            else:
-                df.index = pd.to_datetime(df.index, errors="coerce")
-            df = df[~df.index.isna()]  # drop NaT rows
-            return df.sort_index()
-
-        financial_q = fix_index(financial_q)
-        balance_sheet = fix_index(balance_sheet)
-
-        # --- column aliases for different yahoo column names ---
-        COLUMN_ALIASES = {
-            "Total Liab": ["Total Liab", "Total Liabilities Net Minority Interest"],
-            "Total Stockholder Equity": ["Total Stockholder Equity", "Ordinary Shares",
-                                        "Total Equity Gross Minority Interest"],
-            "Total Current Assets": ["Total Current Assets"],
-            "Total Current Liabilities": ["Total Current Liabilities"]
+    def get_alpha_fundamentals(ticker):
+        base = "https://www.alphavantage.co/query"
+        endpoints = {
+        "income": f"{base}?function=INCOME_STATEMENT&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}",
+        "balance": f"{base}?function=BALANCE_SHEET&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}",
+        "cashflow": f"{base}?function=CASH_FLOW&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}"
         }
+        
+        all_frames = [] # will collect the three dataframes from the endpoints above
 
-        def get_first_available(df, candidates):
-            for c in candidates:
-                if c in df.columns:
-                    return df[c]
-            return pd.Series(index=df.index, dtype=float)
+        for name, url in endpoints.items():
+            try:
+                print(f"Fetching {name} statement for {ticker}...")
+                response = requests.get(url, timeout = 15)
+                response.raise_for_status()
+                data = response.json()
+                reports = data.get("quarterlyReports", []) # alphaVantage provides fundamental data in "quarterlyReports" column
+                # empty list returned if there are no 'quarterlyReports
 
-        # profit margin and growth
-        if "Net Income" in financial_q.columns and "Total Revenue" in financial_q.columns:
-            financial_q["ProfitMargin"] = financial_q["Net Income"] / financial_q["Total Revenue"]
-            financial_q["Revenue_YoY"] = financial_q["Total Revenue"].pct_change(4, fill_method=None)
-            financial_q["ProfitMargin_YoY"] = financial_q["ProfitMargin"].pct_change(4, fill_method=None)
+                if not reports:
+                    print(f"No {name} data returned for {ticker}.")
+                    continue
+                
+                df = pd.DataFrame(reports)
+                df["fiscalDateEnding"] = pd.to_datetime(df["fiscalDateEnding"], errors = "coerce") # fill with NaN to avoid errors
+                df = df.set_index("fiscalDateEnding").sort_index() # align the fiscalDateEnding columns with our dates
+                df = df.apply(pd.to_numeric, errors = "coerce")
+                all_frames.append(df)
 
-        # debt/equity
-        total_liab = get_first_available(balance_sheet, COLUMN_ALIASES["Total Liab"])
-        equity = get_first_available(balance_sheet, COLUMN_ALIASES["Total Stockholder Equity"])
-        balance_sheet["DebtEquity"] = total_liab / equity
-        balance_sheet["DebtEquity_QoQ"] = balance_sheet["DebtEquity"].pct_change(fill_method=None)
-        balance_sheet["DebtEquity_YoY"] = balance_sheet["DebtEquity"].pct_change(4, fill_method=None)
+            except Exception as error:
+                print(f"Error fetching {name} for {ticker}: {error}")
 
-        # current ratio
-        current_assets = get_first_available(balance_sheet, COLUMN_ALIASES["Total Current Assets"])
-        current_liabilities = get_first_available(balance_sheet, COLUMN_ALIASES["Total Current Liabilities"])
-        balance_sheet["CurrentRatio"] = current_assets / current_liabilities
-        balance_sheet["CurrentRatio_QoQ"] = balance_sheet["CurrentRatio"].pct_change(fill_method=None)
+        if not all_frames: # case checking
+            print(f"No quarterly data for {ticker}")
+            return pd.DataFrame
+        
+        fundamentals = pd.concat(all_frames, axis = 1)
+        fundamentals = fundamentals.loc[:, ~fundamentals.columns.duplicated()] # check debug documentation
+        fundamentals = fundamentals.resample("D").ffill() # refilling data daily, if NaN fill it with most recent value
 
-        # combine all fundamentals into pd df
-        fundamentals = pd.concat([
-            financial_q[["Revenue_YoY", "ProfitMargin", "ProfitMargin_YoY"]] if not financial_q.empty else pd.DataFrame(),
-            balance_sheet[["DebtEquity", "DebtEquity_QoQ", "DebtEquity_YoY",
-                        "CurrentRatio", "CurrentRatio_QoQ"]] if not balance_sheet.empty else pd.DataFrame()
-        ], axis=1)
-
-        if fundamentals.empty:
-            print("Fundamentals columns ended up empty.")
-            return pd.DataFrame(index=base_index)
-
-        # --- reindex to daily and forward fill ---
-        fundamentals = fundamentals.resample("D").ffill()
-
-        return fundamentals
+        print(f"Retrieved {fundamentals.shape[1]} fundamental features for {ticker}.")
+        return fundamentals            
 
     #RSI: measures the speed and change of price movements --> a high value suggest a stock is overbought, a low value suggest its oversold
     def rsi_calculation(data, window = 21): # usually 14, but we want long term so...
@@ -253,12 +225,10 @@ for ticker_symbol in tickers:
     def combine_features_dataset(comparisons = None): # just in case the user doesn't input ETFs or index funsd to compare the stock to
 
         df = OHLCV_data_analyzer()
-        fundamentals = valuation_ratios()
+        fundamentals = get_alpha_fundamentals(ticker_symbol)
 
         print("Fundamentals preview:")
         print(fundamentals.head(3))
-        print("NaNs per column (summary):", fundamentals.isna().sum().sum())
-
 
         df = df.merge(fundamentals, how = "left", left_index = True, right_index = True) # left_index and right_index true because the indexes represent dates from the ticker, and we do how = "left" b/c fundamentals data is only for quarters, we fill in later for the daily data
         
