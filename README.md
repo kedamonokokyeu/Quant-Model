@@ -1,4 +1,5 @@
 QUANT-Model
+
 This repository contains a machine learning pipeline for stock trend forecasing, evaluating whether a stock's price will rise over the next 3 months using financial and time-series features derived from the Yahoo Finanace and Alpha Vantage APIs. It combines technical indicators, fundamental data, and benchmark comparisons using XGBoost.
 
 If you want to see the mathematical derivations as to how the features were calculated:
@@ -31,6 +32,7 @@ Visualization
   - Confusiong Matrices and Correlation graphs
 
 --------- 🧠 HOW IT WORKS ---------
+
 1. Enter in one or more stock tickers (e.g., AAPL MSFT)
 2. Optionally, you can add ETF/index tickers for benchmarking (specifically ones that pertain to the tickers you want to analyze) (eg., SPY, QQQ, ^GSPC)
 3. Daily OHLC data and Quarterly Fundamentals downloaded
@@ -41,6 +43,7 @@ Visualization
 8. Generates plots showing aggregate model behavior across tickers
 
  -----  EXAMPLE OUTPUT:  -----
+ 
 Fetching income statement for AAPL...
 Fetching balance statement for AAPL...
 Retrieved 87 fundamental features for AAPL.
@@ -58,6 +61,7 @@ ROC AUC: 0.72
 ├── NVDA_xgb_model.pkl   # Example trained model (NVIDIA)
 
 ---------- ⚙️ INSTALLATION AND SETUP ---------- 
+
 Clone the repository: 
 git clone https://github.com/<kedamonokokyeu>/Stock-Prediction-Model.git
 cd Stock-Prediction-Model
@@ -73,6 +77,7 @@ You can get your API key for free here: https://www.alphavantage.co/
 Run the model!
 
 ----------  😣 LIMITATIONS  ----------
+
 Accuracy depends heavily on data quality and feature completeness
 - With only a free API, much of the fundamentals data is missing
 
@@ -85,6 +90,7 @@ Does not predict exact prices — only growth direction.
 Designed for educational and experimental use, not financial advice (unless you wanna go broke).
 
 ---------- TAKEAWAYS ----------
+
 - Learned how to apply RandomForestClassifier, XGBoost, Hyperparameter tuning, Grid Searching
 - Applied Pandas, visualization tools
 - Coding as a medium for math; how built-in functions, parameters, etc. can be used to interpret mathematical formulas of the technical features being applied
@@ -95,3 +101,4 @@ Designed for educational and experimental use, not financial advice (unless you 
 Tristan Pham
 Statistics & Data Science @ UC Berkeley
 Contact: tristanpham@berkeley.edu
+
