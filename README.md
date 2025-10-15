@@ -101,9 +101,8 @@ Designed for educational and experimental use, not financial advice (unless you 
 
 Tristan Pham
 
-Statistics & Data Science @ UC Berkeley
-
 Contact: tristanpham@berkeley.edu
+
 
 
 
