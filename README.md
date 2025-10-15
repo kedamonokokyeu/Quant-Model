@@ -1,11 +1,11 @@
-QUANT-Model
+                                                              QUANT-Model
 
 This repository contains a machine learning pipeline for stock trend forecasing, evaluating whether a stock's price will rise over the next 3 months using financial and time-series features derived from the Yahoo Finanace and Alpha Vantage APIs. It combines technical indicators, fundamental data, and benchmark comparisons using XGBoost.
 
 If you want to see the mathematical derivations as to how the features were calculated:
 https://docs.google.com/document/d/1Pd--ssGqXhYoqMyuCInbOMeH1jBITANIfHPYS2MOVrc/edit?usp=sharing
 
----------- 📊 FEATURES: ----------
+                                                   ---------- 📊 FEATURES: ----------
 
 Automated Data Retrieval
   - OHLCV Data via yfinance
@@ -31,7 +31,7 @@ Machine Learning & Hyperparameter Tuning
 Visualization
   - Confusiong Matrices and Correlation graphs
 
---------- 🧠 HOW IT WORKS ---------
+                                                    --------- 🧠 HOW IT WORKS ---------
 
 1. Enter in one or more stock tickers (e.g., AAPL MSFT)
 2. Optionally, you can add ETF/index tickers for benchmarking (specifically ones that pertain to the tickers you want to analyze) (eg., SPY, QQQ, ^GSPC)
@@ -42,7 +42,7 @@ Visualization
 7. Prints classificaiton metrics such as F1 score, ROC-AUC, Confusion Matrices
 8. Generates plots showing aggregate model behavior across tickers
 
- -----  EXAMPLE OUTPUT:  -----
+                                                       -----  EXAMPLE OUTPUT:  -----
  
 Fetching income statement for AAPL...
 Fetching balance statement for AAPL...
@@ -60,7 +60,7 @@ ROC AUC: 0.72
 ├── MSFT_xgb_model.pkl   # Example trained model (Microsoft)
 ├── NVDA_xgb_model.pkl   # Example trained model (NVIDIA)
 
----------- ⚙️ INSTALLATION AND SETUP ---------- 
+                                               ---------- ⚙️ INSTALLATION AND SETUP ---------- 
 
 Clone the repository: 
 git clone https://github.com/<kedamonokokyeu>/Stock-Prediction-Model.git
@@ -76,7 +76,7 @@ You can get your API key for free here: https://www.alphavantage.co/
 
 Run the model!
 
-----------  😣 LIMITATIONS  ----------
+                                                 ----------  😣 LIMITATIONS  ----------
 
 Accuracy depends heavily on data quality and feature completeness
 - With only a free API, much of the fundamentals data is missing
@@ -89,7 +89,7 @@ Does not predict exact prices — only growth direction.
 
 Designed for educational and experimental use, not financial advice (unless you wanna go broke).
 
----------- TAKEAWAYS ----------
+                                                    ---------- TAKEAWAYS ----------
 
 - Learned how to apply RandomForestClassifier, XGBoost, Hyperparameter tuning, Grid Searching
 - Applied Pandas, visualization tools
@@ -98,7 +98,11 @@ Designed for educational and experimental use, not financial advice (unless you 
 - that this wasn't easy and I am now contemplating jumping off the clock tower
 
 👨‍💻 Author
+
 Tristan Pham
+
 Statistics & Data Science @ UC Berkeley
+
 Contact: tristanpham@berkeley.edu
+
 
