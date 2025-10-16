@@ -9,7 +9,7 @@ import seaborn as sns
 from xgboost import XGBClassifier
 import requests
 
-ALPHA_VANTAGE_API_KEY = "D6R9ALL4M1NV5A0B"
+ALPHA_VANTAGE_API_KEY = "JI2DKJUN7HDY1I7Y"
 
 print("Enter the company ticker(s) you want to predict. (e.g. AAPL MSFT NVDA)")
 ticker_symbol = input()
@@ -28,7 +28,7 @@ for ticker_symbol in tickers:
         df = yf.download(
             ticker_symbol,
             start="2015-01-01",
-            end="2025-01-01",
+            end = pd.Timestamp.today().strftime("%Y-%m-%d"),
             interval="1d",
             group_by="column"  # prevents multi-level columns
         )
@@ -46,31 +46,33 @@ for ticker_symbol in tickers:
             df["Volume"] = df["Volume"].iloc[:, 0]
 
         # the most important part of OHLC data, it is standardized and you want a positive % change
-        df["Return_1m"] = df["Close"].pct_change(21)   # 21 trading days ≈ 1 month
-        df["Return_3m"] = df["Close"].pct_change(63)   # 63 trading days ≈ 1 quarter
-        df["Return_12m"] = df["Close"].pct_change(252) # 252 trading days ≈ 1 year
+        df["Return_1m"] = df["Close"].pct_change(21).shift(1)   # 21 trading days ≈ 1 month
+        df["Return_3m"] = df["Close"].pct_change(63).shift(1)   # 63 trading days ≈ 1 quarter
+        df["Return_12m"] = df["Close"].pct_change(252).shift(1) # 252 trading days ≈ 1 year
 
         # how the averages move across long periods of time
-        df["SMA_50"] = df["Close"].rolling(50).mean()   # 50-day ≈ 2 months
-        df["SMA_200"] = df["Close"].rolling(200).mean() # 200-day ≈ 10 months
+        df["SMA_50"] = df["Close"].rolling(50).mean().shift(1)   # 50-day ≈ 2 months
+        df["SMA_200"] = df["Close"].rolling(200).mean().shift(1) # 200-day ≈ 10 months
         df["SMA_Ratio"] = df["SMA_50"] / df["SMA_200"]
 
+        df = df.drop(columns=["Return_3m", "Return_12m"], errors="ignore")
+
         # calculates sd from the mean of volatility for the past 63 and 252 days
-        df["Volatility_3m"] = df["Close"].pct_change().rolling(63).std()
-        df["Volatility_12m"] = df["Close"].pct_change().rolling(252).std()
+        df["Volatility_3m"] = df["Close"].pct_change().rolling(63).std().shift(1)
+        df["Volatility_12m"] = df["Close"].pct_change().rolling(252).std().shift(1)
 
         # rolling Sharpe ratio
-        rolling_return = df["Close"].pct_change().rolling(63).mean()
-        rolling_volume = df["Close"].pct_change().rolling(63).std()
+        rolling_return = df["Close"].pct_change().rolling(63).mean().shift(1)
+        rolling_volume = df["Close"].pct_change().rolling(63).std().shift(1)
         df["Sharpe_3m"] = rolling_return / (rolling_volume + 1e-6) # add the 1e-6 value because of rolling volume is super small then we compiler might think we divide by 0, so we throw that in instead
 
         # rolling Max Drawdown
         roll_max = df["Close"].rolling(63, min_periods=1).max()
         daily_drawdown = df["Close"] / roll_max - 1.0
-        df["MaxDrawdown_3m"] = daily_drawdown.rolling(63, min_periods=1).min()
+        df["MaxDrawdown_3m"] = daily_drawdown.rolling(63, min_periods=1).min().shift(1)
 
         # average volume
-        df["AvgVolume_3m"] = df["Volume"].rolling(63).mean()
+        df["AvgVolume_3m"] = df["Volume"].rolling(63).mean().shift(1)   
         df["VolumeVolatility"] = df["AvgVolume_3m"] / df["Volatility_3m"]
 
         # adding lagged returns columns to df (just some extra info for the RandomForestClassifier)
@@ -83,12 +85,22 @@ for ticker_symbol in tickers:
         df["Kurtosis_3months"] = df["Close"].pct_change().rolling(63).kurt()
 
         # Moving Average Convergence Ratios
-        df["Price_vs_SMA50"] = df["Close"] / df["SMA_50"]
-        df["Price_vs_SMA200"] = df["Close"] / df["SMA_200"]
+        df["Price_vs_SMA50"] = df["Close"].shift(1) / df["SMA_50"]
+        df["Price_vs_SMA200"] = df["Close"].shift(1) / df["SMA_200"]
 
-        # Target Variable Design
-        df["Target_3m"] = df["Close"].shift(-63) / df["Close"] - 1
-        df["Target_3m"] = (df["Target_3m"] > 0.05).astype(int)  # classification
+        # compute raw 3-month forward return
+        # compute raw 3-month forward return
+        df["Target_3m_raw"] = df["Close"].shift(-63) / df["Close"] - 1
+
+        # yearly rolling quantile labeling
+        df["Year"] = df.index.year
+        
+        def yearly_threshold(x): # let x be the sub-DataFrame for one year
+            threshold = x["Target_3m_raw"].quantile(0.6)
+            return (x["Target_3m_raw"] > threshold).astype(int) # turn into true or false, then into 0s and 1s
+        
+        df["Target_3m"] = df.groupby("Year", group_keys = False).apply(yearly_threshold) # group_keys to prevent a group label
+        df = df.drop(columns=["Year"])
 
         df = df.ffill()   # forward fill missing fundamentals
         df = df.dropna(subset=["Target_3m"])   # only drop rows where target is missing
@@ -123,6 +135,35 @@ for ticker_symbol in tickers:
                 df["fiscalDateEnding"] = pd.to_datetime(df["fiscalDateEnding"], errors = "coerce") # fill with NaN to avoid errors
                 df = df.set_index("fiscalDateEnding").sort_index() # align the fiscalDateEnding columns with our dates
                 df = df.apply(pd.to_numeric, errors = "coerce")
+
+                # converting the scale-dependent values to ratios
+                if "totalRevenue" in df.columns and "netIncome" in df.columns:
+                    df["ProfitMargin"] = df["netIncome"] / df["totalRevenue"]
+
+                if "totalLiabilities" in df.columns and "totalShareholderEquity" in df.columns:
+                    df["DebtEquity"] = df["totalLiabilities"] / df["totalShareholderEquity"]
+
+                if "totalCurrentAssets" in df.columns and "totalCurrentLiabilities" in df.columns:
+                    df["CurrentRatio"] = df["totalCurrentAssets"] / df["totalCurrentLiabilities"]
+
+                if "operatingCashflow" in df.columns and "totalRevenue" in df.columns:
+                    df["FreeCashFlowMargin"] = df["operatingCashflow"] / df["totalRevenue"]
+
+                if "netIncome" in df.columns and "totalAssets" in df.columns:
+                    df["ROA"] = df["netIncome"] / df["totalAssets"]
+
+                nan_threshold = 0.7
+                drop_cols = df.columns[df.isna().mean() > nan_threshold]
+                if len(drop_cols) > 0:
+                    df = df.drop(columns = drop_cols)
+
+                # log-transform large positive fundamentals to stabilize scale
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                for col in numeric_cols:
+                    if df[col].max() > 1e6:  # only log-transform large-magnitude columns
+                        df[col] = df[col].apply(lambda x: np.log1p(x) if x > 0 else x)
+
+
                 all_frames.append(df)
 
             except Exception as error:
@@ -130,24 +171,27 @@ for ticker_symbol in tickers:
 
         if not all_frames: # case checking
             print(f"No quarterly data for {ticker}")
-            return pd.DataFrame
+            return pd.DataFrame()
         
         fundamentals = pd.concat(all_frames, axis = 1)
         fundamentals = fundamentals.loc[:, ~fundamentals.columns.duplicated()] # check debug documentation
-        fundamentals = fundamentals.resample("D").ffill() # refilling data daily, if NaN fill it with most recent value
+        fundamentals = fundamentals.resample("D").ffill()
+        fundamentals = fundamentals.shift(-90, freq="D")  # move values *forward* in time (simulate delay)
+
 
         print(f"Retrieved {fundamentals.shape[1]} fundamental features for {ticker}.")
         return fundamentals            
 
     #RSI: measures the speed and change of price movements --> a high value suggest a stock is overbought, a low value suggest its oversold
     def rsi_calculation(data, window = 21): # usually 14, but we want long term so...
-        close_difference = data['Close'].diff()
+        close_difference = data['Close'].diff() # a Series of difference between each row and the previous one
 
-        gain = close_difference.where(close_difference > 0, 0) # we need average gain / average loss to calculate RSI line
-        loss = -close_difference.where(close_difference < 0, 0) #negative sign so we can calculate ratio for RS, don't want negative ratio
+        # .where() can perform scalar operations on Series, which is why it works here
+        gain = close_difference.where(close_difference > 0, 0) # where this condition is true, keep the value, otherwise replace with 0
+        loss = -close_difference.where(close_difference < 0, 0) # Same, except keep the value and turn it negative. 
 
-        avg_gain = gain.ewm(com = window - 1, min_periods = window).mean() #can't just calculate average gain and loss simply, because recent values matter MORE
-        avg_loss = loss.ewm(com = window - 1, min_periods = window).mean()
+        avg_gain = gain.ewm(com = window - 1, min_periods = window).mean() # can't just calculate average gain and loss simply, because recent values matter MORE
+        avg_loss = loss.ewm(com = window - 1, min_periods = window).mean() # our com value comes from some convoluted mathematical proof
 
         relative_strength = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + relative_strength))
@@ -162,7 +206,7 @@ for ticker_symbol in tickers:
         macd = short_ema - long_ema
 
         # calculate the signal line (used to smooth the MACD line)
-        signal_line = macd.ewm(span = signal_window, adjust=False).mean() # if MACD > signal, bullish. if MACD < signal, bearish
+        signal_line = macd.ewm(span = signal_window, adjust = False).mean() # if MACD > signal, bullish. if MACD < signal, bearish
         indicator = macd - signal_line
         return macd, signal_line, indicator
 
@@ -206,7 +250,7 @@ for ticker_symbol in tickers:
         stock_return = df["Close"].pct_change()
 
         for ticker in comparisons:
-            etf_ticker = yf.download(ticker, start=start, end=end, progress=False)
+            etf_ticker = yf.download(ticker, start = start, end = end, progress = False)
 
             # --- ensure 'Close' is a single Series, even if multiple tickers or levels 
             if isinstance(etf_ticker.columns, pd.MultiIndex):
@@ -226,35 +270,48 @@ for ticker_symbol in tickers:
 
         df = OHLCV_data_analyzer()
         fundamentals = get_alpha_fundamentals(ticker_symbol)
+        if fundamentals is None or fundamentals.empty:
+            print(f"No fundamentals for {ticker_symbol}, skipping.")
+            fundamentals = pd.DataFrame(index=df.index)  # placeholder to avoid merge error
 
         print("Fundamentals preview:")
         print(fundamentals.head(3))
 
         df = df.merge(fundamentals, how = "left", left_index = True, right_index = True) # left_index and right_index true because the indexes represent dates from the ticker, and we do how = "left" b/c fundamentals data is only for quarters, we fill in later for the daily data
-        
-        df["RSI"] = rsi_calculation(df)
+        df = df.dropna(subset=["Target_3m"])  # only drop if label is missing
+
+        if not fundamentals.empty:
+            df = df.loc[fundamentals.index.min():]
+
+        df["RSI"] = rsi_calculation(df).shift(1)
 
         macd, signal, indicator = macd_calculation(df) # remember return line of macd_calculation(), so macd = macd, signal = signal_line, indicator = indicator
-        df["MACD"] = macd
-        df["MACD_Signal"] = signal
-        df["MACD_Indicator"] = indicator
+        df["MACD"] = macd.shift(1)
+        df["MACD_Signal"] = signal.shift(1)
+        df["MACD_Indicator"] = indicator.shift(1)
 
         upper, lower = bollinger_bands_calculation(df)
-        df["Upper_Bollinger"] = upper
-        df["Lower_Bollinger"] = lower
+        df["Upper_Bollinger"] = upper.shift(1)
+        df["Lower_Bollinger"] = lower.shift(1)
 
         percent_d, percent_k = stochastic_oscillator(df)
-        df["Stochastic_%D"] = percent_d
-        df["Stochastic_%K"] = percent_k
+        df["Stochastic_%D"] = percent_d.shift(1)
+        df["Stochastic_%K"] = percent_k.shift(1)
 
-        df["OBV"] = calculate_OBV(df)
+        df["OBV"] = pd.Series(calculate_OBV(df), index=df.index).shift(1)
 
         if comparisons != None:
             relative_strength_df = relative_strength_comparison(df, comparisons) # remember relative_strength_comparison returns a dataframe of these comparisons
             df = df.join(relative_strength_df) # add to our big dataframe
 
-        df = df.ffill()
-        df = df.dropna(subset=["Target_3m"])  # only drop if label is missing
+        # --- sanity check: how imbalanced are our labels? ---
+        print("\n===== Label Distribution Check for", ticker_symbol, "=====")
+        print(df["Target_3m"].value_counts())
+        print(df["Target_3m"].value_counts(normalize=True))
+        print("Ratio (1s / 0s):", df["Target_3m"].sum() / len(df["Target_3m"]))
+        print("Number of samples:", len(df))
+        print("Period covered:", df.index.min().date(), "to", df.index.max().date())
+
         # so quarterly values will be applied to every day in that quarter until updated instead of being NaN values
         return df
 
@@ -262,22 +319,23 @@ for ticker_symbol in tickers:
 
     df = combine_features_dataset(comparisons)
 
-    X = df.drop(columns = ["Target_3m"]) # given all the data from the dataset, we want to predict Target_3m, 3 months into the future, but we drop it so the model cannot see the future
+    X = df.drop(columns=["Target_3m", "Target_3m_raw"], errors="ignore") # given all the data from the dataset, we want to predict Target_3m, 3 months into the future, but we drop it so the model cannot see the future
     y = df["Target_3m"] # what we want to predict
 
     dates = pd.to_datetime(X.index) # X.index refers to the rows of dates 
-    recent_date = dates.max()
-    age_days = (recent_date - dates).days # days converts this value into integers of how many days past
 
     # can't shuffle the data around for training and testing since finance is time-series
     split_date = "2021-01-01"
     X_train, X_test = X.loc[:split_date].iloc[:-1], X.loc[split_date:] # added iloc[:-1] all rows except the very last row to prevent data leakage, since both the testing and the training include the split date
     y_train, y_test = y.loc[:split_date].iloc[:-1], y.loc[split_date:] 
 
+    train_dates = pd.to_datetime(X_train.index)
+    recent_date = train_dates.max()
+    age_days = (recent_date - train_dates).days # days converts this value into integers of how many days past
+
     # implement decaying logic for weighting
     decay = 0.99
-    weights = pd.Series(decay ** (age_days / 30), index = X.index) # 1% drop for every month in the dataset behind the current date, a pandas series with dates indexes
-    weights_train = weights.loc[X_train.index] # also added .iloc[:-1] to drop the last row so that the split date data isn't in both training and testing
+    weights_train = pd.Series(decay ** (age_days / 30), index=X_train.index) # also added .iloc[:-1] to drop the last row so that the split date data isn't in both training and testing
 
     positives = y_train.sum()  # looks at all "1" values in y_train, and we'll apply weighting on this later
     negatives = len(y_train) - positives # these are our "0" values through binary classification, this is to see how many there are
@@ -296,7 +354,7 @@ for ticker_symbol in tickers:
 
     param_distributions = { # what we'll grid search for optimization
         "n_estimators": [300, 500, 700, 900],
-        "learning_rate": [0.01, 0.03, 0.05, 1],
+        "learning_rate": [0.01, 0.03, 0.05, 0.1],
         "max_depth": [3, 4, 5, 6, 8],
         "min_child_weight": [1, 3, 5, 7],
         "subsample": [0.6, 0.8, 1.0],
@@ -396,7 +454,9 @@ for ticker_symbol in tickers:
     # accumulate confusion matrices for aggregate view
     all_cm += confusion_matrix(y_test, y_pred)
 
-    corrs = df.corr()["Target_3m"].drop("Target_3m")
+    df = df.drop(columns=["Target_3m_raw"], errors="ignore")
+    corrs = X_train.join(y_train).corr()["Target_3m"].drop("Target_3m")
+
     all_corrs.append(corrs)
 
 # ---- final confusion matrix ----
