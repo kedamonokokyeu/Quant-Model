@@ -29,7 +29,7 @@ Visualization
 
 Confusiong Matrices and Correlation graphs
 
-                               --------- 🧠 HOW IT WORKS ---------
+                                 --------- 🧠 HOW IT WORKS ---------
 Enter in one or more stock tickers (e.g., AAPL MSFT)
 
 Optionally, you can add ETF/index tickers for benchmarking (specifically ones that pertain to the tickers you want to analyze) (eg., SPY, QQQ, ^GSPC)
@@ -45,8 +45,8 @@ Model Training --> Data is split by date --> hyperparameters tuned via cross-val
 Prints classificaiton metrics such as F1 score, ROC-AUC, Confusion Matrices
 
 Generates plots showing aggregate model behavior across tickers
-
-                                  -----  EXAMPLE OUTPUT:  -----
+  
+                                  - ----  EXAMPLE OUTPUT:  -----
 Fetching income statement for AAPL... Fetching balance statement for AAPL... Retrieved 87 fundamental features for AAPL.
 
 Currently tuning XGBoost Hyperparameters . . . Best Parameters: {'learning_rate': 0.03, 'max_depth': 5, 'subsample': 0.8, ...} F1: 0.61 ROC AUC: 0.72
@@ -64,7 +64,7 @@ Run the model!
 
 Enter the tickers you'd like to predict, and enter the ETF and index funds tickers you'd like to compare to.
 
-                               ----------  😣 LIMITATIONS  ----------
+                                ----------  😣 LIMITATIONS  ----------
 Accuracy depends heavily on data quality and feature completeness
 
 With only a free API, much of the fundamentals data is missing
@@ -75,7 +75,7 @@ Limited Alpha Vantage free-tier data frequency Does not predict exact prices —
 
 Designed for educational and experimental use, not financial advice (unless you wanna go broke).
 
-                                ---------- TAKEAWAYS ----------
+                                   ---------- TAKEAWAYS ----------
 Learned how to apply RandomForestClassifier, XGBoost, Hyperparameter tuning, Grid Searching
 Applied Pandas, visualization tools
 Coding as a medium for math; how built-in functions, parameters, etc. can be used to interpret mathematical formulas of the technical features being applied
@@ -86,4 +86,5 @@ that this wasn't easy and I am now contemplating jumping off the clock tower
 Tristan Pham
 
 Contact: tristanpham@berkeley.edu
+
 
