@@ -31,7 +31,7 @@ Machine Learning & Hyperparameter Tuning
 Visualization
   - Confusiong Matrices and Correlation graphs
 
-                                      --------- 🧠 HOW IT WORKS ---------
+                                    --------- 🧠 HOW IT WORKS ---------
 
 1. Enter in one or more stock tickers (e.g., AAPL MSFT)
 2. Optionally, you can add ETF/index tickers for benchmarking (specifically ones that pertain to the tickers you want to analyze) (eg., SPY, QQQ, ^GSPC)
@@ -42,7 +42,7 @@ Visualization
 7. Prints classificaiton metrics such as F1 score, ROC-AUC, Confusion Matrices
 8. Generates plots showing aggregate model behavior across tickers
 
-                                         -----  EXAMPLE OUTPUT:  -----
+                                      -----  EXAMPLE OUTPUT:  -----
  
 Fetching income statement for AAPL...
 Fetching balance statement for AAPL...
@@ -76,6 +76,8 @@ You can get your API key for free here: https://www.alphavantage.co/
 
 Run the model!
 
+Enter the tickers you'd like to predict, and enter the ETF and index funds tickers you'd like to compare to.
+
                                  ----------  😣 LIMITATIONS  ----------
 
 Accuracy depends heavily on data quality and feature completeness
@@ -102,6 +104,7 @@ Designed for educational and experimental use, not financial advice (unless you 
 Tristan Pham
 
 Contact: tristanpham@berkeley.edu
+
 
 
 
