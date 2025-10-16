@@ -1,6 +1,6 @@
                                                  QUANT-Model
 
-This repository contains a machine learning pipeline for stock trend forecasing, evaluating whether a stock's price will rise over the next 3 months using financial and time-series features derived from the Yahoo Finanace and Alpha Vantage APIs. It combines technical indicators, fundamental data, and benchmark comparisons using XGBoost.
+This repository contains a machine learning pipeline for stock trend forecasting, evaluating whether a stock's price will rise over the next 3 months using financial and time-series features derived from the Yahoo Finanace and Alpha Vantage APIs. It combines technical indicators, fundamental data, and benchmark comparisons using XGBoost.
 
 If you want to see the mathematical derivations as to how the features were calculated:
 https://docs.google.com/document/d/1Pd--ssGqXhYoqMyuCInbOMeH1jBITANIfHPYS2MOVrc/edit?usp=sharing
@@ -102,6 +102,7 @@ Designed for educational and experimental use, not financial advice (unless you 
 Tristan Pham
 
 Contact: tristanpham@berkeley.edu
+
 
 
 
