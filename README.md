@@ -84,13 +84,13 @@ Coding as a medium for math; how built-in functions, parameters, etc. can be use
 
 Data cleaning and analysis in order to tweak XGB parameter lists and optimize so Grid Search can test more effective combinations
 
-that this wasn't easy and I am now contemplating jumping off the clock tower
 
 👨‍💻 Author
 
 Tristan Pham
 
 Contact: tristanpham@berkeley.edu
+
 
 
 
