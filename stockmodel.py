@@ -8,13 +8,124 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from xgboost import XGBClassifier
 import requests
+from pandas_datareader import data as pdr
 
 ALPHA_VANTAGE_API_KEY = "JI2DKJUN7HDY1I7Y"
+
+# -------------------- MACRO FEATURES -------------------- #
+
+def fetch_vix(start_date="2010-01-01", end_date=None):
+
+    df = yf.download(
+        "^VIX",
+        start=start_date,
+        end=end_date,
+        interval="1d",
+        auto_adjust=False,   # prevent silent behavior changes
+        progress=False
+    )
+
+    if df.empty:
+        raise ValueError("VIX download returned empty data.")
+
+    # extract and rename
+    vix = df["Close"]
+    if isinstance(vix, pd.DataFrame):
+        vix = vix.iloc[:, 0]
+        vix = vix.rename('VIX')
+
+    vix_change_20d = vix.pct_change(20, fill_method = None).rename("VIX_change20d")
+
+    roll_mean = vix.rolling(20).mean()
+    roll_std = vix.rolling(20).std()
+    vix_z = ((vix - roll_mean) / (roll_std + 1e-9)).rename("VIX_z20")
+
+    # combine into one dataframe
+    vix_df = pd.concat(
+        [vix, vix_change_20d, vix_z],
+        axis=1
+    )
+
+    return vix_df.dropna()
+
+
+def fetch_10Year_Treasury(start_date="2010-01-01", end_date=None):
+    df = yf.download(
+        "^TNX",
+        start=start_date,
+        end=end_date,
+        interval="1d",
+        auto_adjust=False,
+        progress=False
+    )
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df[["Close"]].rename(columns={"Close": "10Y_Yield"})
+    df["10Y_Yield"] /= 10.0  # TNX scaling
+
+    df["10Y_Yield_Change"] = df["10Y_Yield"].diff()
+    df["10Y_Yield_ROC"] = df["10Y_Yield"].pct_change()
+
+    roll_mean = df["10Y_Yield"].rolling(60).mean()
+    roll_std = df["10Y_Yield"].rolling(60).std()
+    df["10Y_Yield_Z"] = (df["10Y_Yield"] - roll_mean) / (roll_std + 1e-9)
+
+    return df.dropna()
+
+def fetch_cpi(start_date="2010-01-01", end_date=None): # because yfinance does not provide CPI data, requires federal reserve's database
+    cpi = pdr.DataReader("CPIAUCSL", "fred", start_date, end_date)
+
+    cpi = cpi.rename(columns={"CPIAUCSL": "CPI"})
+    cpi["CPI_YoY"] = cpi["CPI"].pct_change(periods = 12, fill_method = None)
+    cpi["CPI_MoM"] = cpi["CPI"].pct_change(periods = 1, fill_method = None)
+    cpi["CPI_YoY_Trend"] = cpi["CPI_YoY"].rolling(6).mean()
+
+    roll_mean = cpi["CPI_YoY"].rolling(24).mean()
+    roll_std = cpi["CPI_YoY"].rolling(24).std()
+    cpi["CPI_YoY_Z"] = (cpi["CPI_YoY"] - roll_mean) / (roll_std + 1e-9)
+
+    cpi = cpi.resample("D").ffill()
+    return cpi.dropna()
+
+# merge all our macrofeatures into one dataframe so we can later merge it into the main one
+def build_macro_features(start, end):
+    macro_frames = []
+
+    try:
+        macro_frames.append(fetch_vix(start, end))
+    except Exception as e:
+        print("VIX failed:", e)
+
+    try:
+        macro_frames.append(fetch_cpi(start, end))
+    except Exception as e:
+        print("CPI failed:", e)
+
+    try:
+        macro_frames.append(fetch_10Year_Treasury(start, end))
+    except Exception as e:
+        print("10Y failed:", e)
+
+    if not macro_frames:
+        return pd.DataFrame()
+
+    macro_df = pd.concat(macro_frames, axis=1)
+    macro_df = macro_df.sort_index().ffill()
+
+    return macro_df
+
 
 print("Enter the company ticker(s) you want to predict. (e.g. AAPL MSFT NVDA)")
 ticker_symbol = input()
 tickers = ticker_symbol.upper().split()
 results = {}
+
+GLOBAL_MACRO_DF = build_macro_features(
+    start="2010-01-01",
+    end=pd.Timestamp.today().strftime('%Y-%m-%d')
+)
 
 print("Enter ETF or Index Fund tickers for comparison (e.g. SPY QQQ ^GSPC IWM), or press Enter for none:")
 etf_input = input().strip().upper()
@@ -176,7 +287,7 @@ for ticker_symbol in tickers:
         fundamentals = pd.concat(all_frames, axis = 1)
         fundamentals = fundamentals.loc[:, ~fundamentals.columns.duplicated()] # check debug documentation
         fundamentals = fundamentals.resample("D").ffill()
-        fundamentals = fundamentals.shift(-90, freq="D")  # move values *forward* in time (simulate delay)
+        fundamentals = fundamentals.shift(90, freq="D")  # move values *forward* in time (simulate delay)
 
 
         print(f"Retrieved {fundamentals.shape[1]} fundamental features for {ticker}.")
@@ -266,9 +377,31 @@ for ticker_symbol in tickers:
             relative_strength[f"RS_{ticker}"] = stock_return - etf_return
         return relative_strength
     
-    def combine_features_dataset(comparisons = None): # just in case the user doesn't input ETFs or index funsd to compare the stock to
+    def find_best_threshold(model, X, y, metric = f1_score):
+
+        y_proba = model.predict_proba(X)[:, 1]
+
+        thresholds = np.linspace(0.05, 0.95, 50)
+        scores = []
+
+        for t in thresholds:
+            preds = (y_proba >= t).astype(int)
+            scores.append(metric(y, preds))
+
+        best_idx = np.argmax(scores)
+        return thresholds[best_idx], scores[best_idx]
+
+    def combine_features_dataset(ticker_symbol, comparisons = None): # just in case the user doesn't input ETFs or index funsd to compare the stock to
 
         df = OHLCV_data_analyzer()
+
+        df = df.merge(
+            GLOBAL_MACRO_DF.loc[df.index.min():df.index.max()],
+            how = "left",
+            left_index = True,
+            right_index = True
+        )
+
         fundamentals = get_alpha_fundamentals(ticker_symbol)
         if fundamentals is None or fundamentals.empty:
             print(f"No fundamentals for {ticker_symbol}, skipping.")
@@ -317,7 +450,7 @@ for ticker_symbol in tickers:
 
     # ---------------------- BUILDING THE MODEL AND TUNING ---------------------- #
 
-    df = combine_features_dataset(comparisons)
+    df = combine_features_dataset(ticker_symbol, comparisons)
 
     X = df.drop(columns=["Target_3m", "Target_3m_raw"], errors="ignore") # given all the data from the dataset, we want to predict Target_3m, 3 months into the future, but we drop it so the model cannot see the future
     y = df["Target_3m"] # what we want to predict
@@ -386,12 +519,24 @@ for ticker_symbol in tickers:
     
     # mark the best parameters for each ticker
     best_xgb = search.best_estimator_ # a new XGB model, but instead of dictionaries for its parameters, it just has the best ones  
+
+    best_threshold, best_train_f1 = find_best_threshold(
+        best_xgb,
+        X_train,
+        y_train,
+        metric=f1_score
+    )
+
+    print(f"Optimized threshold (train only): {best_threshold:.3f}")
+    print(f"Train F1 at optimal threshold: {best_train_f1:.3f}")
+
+
     print("")
     print("Best Parameters:", search.best_params_)  
     print("Best Cross-val F1:", search.best_score_)
 
     y_proba = best_xgb.predict_proba(X_test)[:, 1] # get the probaiblity of growth values
-    y_pred = (y_proba >= 0.5).astype(int) # convert to true or false array, then back to 0 and 1s
+    y_pred = (y_proba >= best_threshold).astype(int) # convert to true or false array, then back to 0 and 1s
 
     print("F1:", f1_score(y_test, y_pred))
     print("ROC AUC:", roc_auc_score(y_test, y_proba))  # see how accurate we are in ranking positives
@@ -416,7 +561,7 @@ all_corrs = [] # series meant to hold the correlations
 
 for ticker_symbol in tickers:
     ticker = yf.Ticker(ticker_symbol)
-    df = combine_features_dataset()
+    df = combine_features_dataset(ticker_symbol, comparisons)
 
     X = df.drop(columns=["Target_3m"])
     y = df["Target_3m"]
