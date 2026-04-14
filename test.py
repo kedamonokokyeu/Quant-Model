@@ -1,7 +1,7 @@
 import pandas as pd
 import requests
 
-API_KEY = "JI2DKJUN7HDY1I7Y"
+API_KEY = "..."
 ticker = "AAPL"
 url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEY}"
 
