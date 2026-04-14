@@ -10,7 +10,7 @@ from xgboost import XGBClassifier
 import requests
 from pandas_datareader import data as pdr
 
-ALPHA_VANTAGE_API_KEY = "JI2DKJUN7HDY1I7Y"
+ALPHA_VANTAGE_API_KEY = "..."
 
 # -------------------- MACRO FEATURES -------------------- #
 
